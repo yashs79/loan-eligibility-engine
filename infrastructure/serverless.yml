@@ -1,0 +1,124 @@
+service: loan-eligibility-engine
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.9
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  environment:
+    DB_HOST: ${self:custom.dbHost}
+    DB_NAME: ${self:custom.dbName}
+    DB_USER: ${self:custom.dbUser}
+    DB_PASSWORD: ${self:custom.dbPassword}
+    N8N_WEBHOOK_URL: ${self:custom.n8nWebhookUrl}
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - s3:GetObject
+        - s3:PutObject
+      Resource: !Join ['', ['arn:aws:s3:::', !Ref UserDataBucket, '/*']]
+    - Effect: Allow
+      Action:
+        - ses:SendEmail
+        - ses:SendRawEmail
+      Resource: '*'
+    - Effect: Allow
+      Action:
+        - rds:*
+      Resource: '*'
+
+custom:
+  dbHost: 
+    Fn::GetAtt: [RDSInstance, Endpoint.Address]
+  dbName: loaneligibility
+  dbUser: admin
+  dbPassword: ${ssm:/loan-eligibility/db-password~true}
+  n8nWebhookUrl: ${param:n8nWebhookUrl, 'http://localhost:5678/webhook/loan-matching'}
+  bucketName: ${self:service}-user-data-${self:provider.stage}
+
+functions:
+  processUserData:
+    handler: ../backend/process_user_data.handler
+    events:
+      - s3:
+          bucket: !Ref UserDataBucket
+          event: s3:ObjectCreated:*
+          rules:
+            - suffix: .csv
+    timeout: 300
+    memorySize: 512
+
+resources:
+  Resources:
+    # S3 Bucket for CSV uploads
+    UserDataBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.bucketName}
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+              AllowedOrigins:
+                - '*'
+              MaxAge: 3000
+    
+    # RDS PostgreSQL Instance
+    RDSInstance:
+      Type: AWS::RDS::DBInstance
+      Properties:
+        Engine: postgres
+        DBName: ${self:custom.dbName}
+        MasterUsername: ${self:custom.dbUser}
+        MasterUserPassword: ${self:custom.dbPassword}
+        DBInstanceClass: db.t3.micro
+        AllocatedStorage: 20
+        BackupRetentionPeriod: 7
+        MultiAZ: false
+        PubliclyAccessible: true
+        StorageType: gp2
+        Tags:
+          - Key: Name
+            Value: ${self:service}-${self:provider.stage}
+    
+    # Security Group for RDS
+    RDSSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Security group for RDS instance
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 5432
+            ToPort: 5432
+            CidrIp: 0.0.0.0/0
+    
+    # IAM Role for Lambda
+    LambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+          - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+          - arn:aws:iam::aws:policy/AmazonRDSFullAccess
+          - arn:aws:iam::aws:policy/AmazonSESFullAccess
+
+  Outputs:
+    UserDataBucketName:
+      Value: !Ref UserDataBucket
+    RDSEndpoint:
+      Value: !GetAtt RDSInstance.Endpoint.Address
+    RDSPort:
+      Value: !GetAtt RDSInstance.Endpoint.Port

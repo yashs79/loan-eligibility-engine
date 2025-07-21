@@ -1,0 +1,713 @@
+{
+  "name": "User-Loan Matching",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "loan-matching",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ],
+      "webhookId": "loan-matching"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract batch_id from the webhook payload\nconst batchId = $input.item.json.body.batch_id;\n\nif (!batchId) {\n  throw new Error('No batch_id provided in webhook payload');\n}\n\nreturn {\n  json: {\n    batch_id: batchId\n  }\n};"
+      },
+      "name": "Extract Batch ID",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT * FROM users WHERE batch_id = '{{ $json.batch_id }}'"
+      },
+      "name": "Get New Users",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM loan_products"
+      },
+      "name": "Get Loan Products",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        650,
+        500
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// This function implements the first stage of filtering: SQL-based pre-filtering\n// We'll create SQL queries that will efficiently filter out obvious non-matches\n\nconst users = $node[\"Get New Users\"].json;\nconst batchId = $json.batch_id;\n\nif (!users || users.length === 0) {\n  return {\n    json: {\n      status: 'no_users_found',\n      batch_id: batchId\n    }\n  };\n}\n\n// Generate SQL queries for each user to find potential matches\nconst sqlQueries = users.map(user => {\n  const userId = user.user_id;\n  const creditScore = user.credit_score;\n  const monthlyIncome = user.monthly_income;\n  const age = user.age;\n  const dti = user.debt_to_income_ratio || 0;\n  \n  // SQL query that filters based on basic criteria\n  const query = `\n    INSERT INTO matches (user_id, product_id, match_score, match_reason)\n    SELECT \n      ${userId} as user_id,\n      product_id,\n      CASE\n        WHEN credit_score >= min_credit_score + 50 THEN 90\n        WHEN credit_score >= min_credit_score + 30 THEN 80\n        WHEN credit_score >= min_credit_score + 10 THEN 70\n        WHEN credit_score >= min_credit_score THEN 60\n        ELSE 50\n      END as match_score,\n      'Pre-filtered match based on credit score, income, and age criteria'\n    FROM \n      loan_products\n    WHERE\n      ${creditScore} >= min_credit_score\n      AND ${monthlyIncome} >= min_monthly_income\n      AND ${age} >= min_age\n      AND (max_age IS NULL OR ${age} <= max_age)\n      AND (max_debt_to_income IS NULL OR ${dti} <= max_debt_to_income)\n    ON CONFLICT (user_id, product_id) DO NOTHING\n    RETURNING *;\n  `;\n  \n  return {\n    user_id: userId,\n    query: query\n  };\n});\n\nreturn {\n  json: {\n    sql_queries: sqlQueries,\n    batch_id: batchId\n  }\n};"
+      },
+      "name": "Generate SQL Filters",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "exists"
+            }
+          ]
+        }
+      },
+      "name": "Users Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "inputItems": "={{ $json.sql_queries }}"
+      },
+      "name": "Process Each User",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.query }}"
+      },
+      "name": "Execute SQL Filter",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $node[\"Process Each User\"].context[\"noItemsLeft\"] }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "All Users Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT u.user_id, u.email, u.credit_score, u.monthly_income, COUNT(m.match_id) as match_count\nFROM users u\nLEFT JOIN matches m ON u.user_id = m.user_id\nWHERE u.batch_id = '{{ $node[\"Extract Batch ID\"].json[\"batch_id\"] }}'\nGROUP BY u.user_id, u.email, u.credit_score, u.monthly_income\nORDER BY match_count DESC;"
+      },
+      "name": "Get Match Summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT COUNT(*) as total_matches\nFROM matches m\nJOIN users u ON m.user_id = u.user_id\nWHERE u.batch_id = '{{ $node[\"Extract Batch ID\"].json[\"batch_id\"] }}';"
+      },
+      "name": "Count Matches",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Find users with borderline matches that need LLM evaluation\nconst batchId = $node[\"Extract Batch ID\"].json.batch_id;\n\n// Query to find users with borderline cases\nconst query = `\nSELECT u.user_id, u.email, u.monthly_income, u.credit_score, u.employment_status, u.age, u.debt_to_income_ratio,\n       lp.product_id, lp.provider_name, lp.product_name, lp.interest_rate, lp.min_credit_score\nFROM users u\nCROSS JOIN loan_products lp\nLEFT JOIN matches m ON u.user_id = m.user_id AND lp.product_id = m.product_id\nWHERE u.batch_id = '${batchId}'\n  AND m.match_id IS NULL -- No match exists yet\n  AND u.credit_score BETWEEN (lp.min_credit_score - 30) AND lp.min_credit_score -- Within 30 points of minimum\n  AND u.monthly_income >= (lp.min_monthly_income * 0.9) -- At least 90% of required income\nLIMIT 10; -- Limit to avoid too many LLM API calls\n`;\n\nreturn {\n  json: {\n    llm_evaluation_query: query,\n    batch_id: batchId\n  }\n};"
+      },
+      "name": "Prepare LLM Cases",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.llm_evaluation_query }}"
+      },
+      "name": "Get Borderline Cases",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        2250,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1
+      },
+      "name": "Process Each Case",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        2450,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "gpt-3.5-turbo"
+            },
+            {
+              "name": "messages",
+              "value": "=[\n  {\n    \"role\": \"system\",\n    \"content\": \"You are a loan eligibility expert. Your task is to evaluate if a user with specific financial characteristics would be eligible for a loan product, even if they are slightly below the standard requirements. Consider factors like employment stability, debt-to-income ratio, and overall financial health. Respond with a JSON object containing 'eligible' (boolean), 'confidence' (number between 0-100), and 'reason' (string).\"\n  },\n  {\n    \"role\": \"user\",\n    \"content\": \"Evaluate if this user is eligible for this loan product:\\n\\nUser Information:\\nMonthly Income: ${{ $json.monthly_income }}\\nCredit Score: {{ $json.credit_score }}\\nEmployment Status: {{ $json.employment_status }}\\nAge: {{ $json.age }}\\nDebt-to-Income Ratio: {{ $json.debt_to_income_ratio || 'Not provided' }}\\n\\nLoan Product:\\nProvider: {{ $json.provider_name }}\\nProduct: {{ $json.product_name }}\\nInterest Rate: {{ $json.interest_rate }}%\\nMinimum Credit Score Requirement: {{ $json.min_credit_score }}\\n\\nThe user is slightly below the standard requirements. Would you recommend approving them for this loan?\"\n  }\n]"
+            },
+            {
+              "name": "temperature",
+              "value": 0.2
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "LLM Evaluation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        2650,
+        200
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "1",
+          "name": "OpenAI API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse the LLM response and extract the eligibility decision\nlet llmResponse;\ntry {\n  const responseData = $input.item.json.choices[0].message.content;\n  // Try to parse JSON from the response\n  llmResponse = JSON.parse(responseData);\n} catch (error) {\n  // If not valid JSON, try to extract using regex\n  const responseText = $input.item.json.choices[0].message.content;\n  \n  // Extract eligible boolean\n  const eligibleMatch = responseText.match(/\"eligible\"\\s*:\\s*(true|false)/i);\n  const eligible = eligibleMatch ? eligibleMatch[1].toLowerCase() === 'true' : false;\n  \n  // Extract confidence score\n  const confidenceMatch = responseText.match(/\"confidence\"\\s*:\\s*(\\d+)/i);\n  const confidence = confidenceMatch ? parseInt(confidenceMatch[1]) : 0;\n  \n  // Extract reason\n  const reasonMatch = responseText.match(/\"reason\"\\s*:\\s*\"([^\"]+)\"/i);\n  const reason = reasonMatch ? reasonMatch[1] : 'No reason provided';\n  \n  llmResponse = { eligible, confidence, reason };\n}\n\n// Default values if parsing failed\nif (!llmResponse) {\n  llmResponse = { eligible: false, confidence: 0, reason: 'Failed to parse LLM response' };\n}\n\n// Add user and product info to the response\nconst result = {\n  user_id: $input.item.json.user_id,\n  product_id: $input.item.json.product_id,\n  eligible: llmResponse.eligible,\n  confidence: llmResponse.confidence,\n  reason: llmResponse.reason\n};\n\nreturn { json: result };"
+      },
+      "name": "Parse LLM Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        2850,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.eligible }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Is Eligible?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        3050,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO matches (user_id, product_id, match_score, match_reason)\nVALUES ({{ $json.user_id }}, {{ $json.product_id }}, {{ $json.confidence }}, 'LLM Evaluation: {{ $json.reason }}')\nON CONFLICT (user_id, product_id) DO NOTHING;"
+      },
+      "name": "Add LLM Match",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        3250,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $node[\"Process Each Case\"].context[\"noItemsLeft\"] }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "All Cases Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        3450,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT COUNT(*) as llm_matches\nFROM matches m\nJOIN users u ON m.user_id = u.user_id\nWHERE u.batch_id = '{{ $node[\"Extract Batch ID\"].json[\"batch_id\"] }}'\nAND m.match_reason LIKE 'LLM Evaluation:%';"
+      },
+      "name": "Count LLM Matches",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        3650,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "webhook",
+              "webhookId": "loan-notification"
+            }
+          ]
+        }
+      },
+      "name": "Trigger Notification Workflow",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        3850,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://hooks.slack.com/services/YOUR_SLACK_WEBHOOK_URL",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "=Matching process completed for batch {{ $node[\"Extract Batch ID\"].json[\"batch_id\"] }}.\n\nTotal matches: {{ $node[\"Count Matches\"].json[\"total_matches\"] }}\nLLM-assisted matches: {{ $node[\"Count LLM Matches\"].json[\"llm_matches\"] }}\n\nNotification workflow has been triggered."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Send Completion Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        4050,
+        100
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Continue to Next Case",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3250,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Continue to Next User",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Log that no users were found in this batch\nconst batchId = $json.batch_id;\nconsole.log(`No users found in batch ${batchId}`);\n\nreturn $input.item;"
+      },
+      "name": "Log No Users",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Batch ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Batch ID": {
+      "main": [
+        [
+          {
+            "node": "Get New Users",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Loan Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get New Users": {
+      "main": [
+        [
+          {
+            "node": "Generate SQL Filters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate SQL Filters": {
+      "main": [
+        [
+          {
+            "node": "Users Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Users Found?": {
+      "main": [
+        [
+          {
+            "node": "Process Each User",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log No Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Each User": {
+      "main": [
+        [
+          {
+            "node": "Execute SQL Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute SQL Filter": {
+      "main": [
+        [
+          {
+            "node": "All Users Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Users Processed?": {
+      "main": [
+        [
+          {
+            "node": "Get Match Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Count Matches",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Continue to Next User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Matches": {
+      "main": [
+        [
+          {
+            "node": "Prepare LLM Cases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare LLM Cases": {
+      "main": [
+        [
+          {
+            "node": "Get Borderline Cases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Borderline Cases": {
+      "main": [
+        [
+          {
+            "node": "Process Each Case",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Each Case": {
+      "main": [
+        [
+          {
+            "node": "LLM Evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Evaluation": {
+      "main": [
+        [
+          {
+            "node": "Parse LLM Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse LLM Response": {
+      "main": [
+        [
+          {
+            "node": "Is Eligible?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Eligible?": {
+      "main": [
+        [
+          {
+            "node": "Add LLM Match",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Continue to Next Case",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add LLM Match": {
+      "main": [
+        [
+          {
+            "node": "All Cases Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue to Next Case": {
+      "main": [
+        [
+          {
+            "node": "All Cases Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Cases Processed?": {
+      "main": [
+        [
+          {
+            "node": "Count LLM Matches",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Process Each Case",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count LLM Matches": {
+      "main": [
+        [
+          {
+            "node": "Trigger Notification Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Notification Workflow": {
+      "main": [
+        [
+          {
+            "node": "Send Completion Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue to Next User": {
+      "main": [
+        [
+          {
+            "node": "Process Each User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

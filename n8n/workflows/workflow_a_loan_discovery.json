@@ -1,0 +1,346 @@
+{
+  "name": "Loan Product Discovery",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "minutesInterval": 1440
+            }
+          ]
+        }
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// List of financial websites to crawl\nconst websites = [\n  {\n    name: 'Example Bank',\n    url: 'https://www.examplebank.com/personal-loans',\n    selector: '.loan-products'\n  },\n  {\n    name: 'Finance Credit Union',\n    url: 'https://www.financecreditunion.com/loans',\n    selector: '.product-listing'\n  },\n  {\n    name: 'Lending Tree',\n    url: 'https://www.lendingtree.com/personal-loans',\n    selector: '.lenderTable'\n  }\n];\n\n// Return the list of websites to crawl\nreturn websites.map(site => {\n  return {\n    json: site\n  };\n});"
+      },
+      "name": "Define Websites",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "name": "Split Into Items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract loan product information from HTML\nconst $ = this.getCheerioObject($input.item.json.data);\nconst selector = $input.item.json.selector;\nconst siteName = $input.item.json.name;\n\nconst products = [];\n\n// Different extraction logic based on the website\nif (siteName === 'Example Bank') {\n  $(selector).each((i, el) => {\n    const product = {\n      provider_name: siteName,\n      product_name: $(el).find('.product-title').text().trim(),\n      interest_rate: parseFloat($(el).find('.interest-rate').text().replace('%', '')),\n      min_loan_amount: parseFloat($(el).find('.min-amount').text().replace('$', '').replace(',', '')),\n      max_loan_amount: parseFloat($(el).find('.max-amount').text().replace('$', '').replace(',', '')),\n      loan_term_months: parseInt($(el).find('.loan-term').text().replace(' months', '')),\n      min_credit_score: parseInt($(el).find('.min-credit').text()),\n      min_monthly_income: parseFloat($(el).find('.min-income').text().replace('$', '').replace(',', '')),\n      max_debt_to_income: parseFloat($(el).find('.max-dti').text().replace('%', '')),\n      min_employment_years: parseFloat($(el).find('.min-employment').text()),\n      min_age: parseInt($(el).find('.min-age').text()),\n      max_age: parseInt($(el).find('.max-age').text()),\n      other_criteria: JSON.stringify({\n        requires_bank_account: $(el).find('.requires-bank').text().includes('Yes'),\n        accepts_cosigners: $(el).find('.cosigners').text().includes('Yes')\n      }),\n      source_url: $input.item.json.url\n    };\n    \n    // Only add if we have the essential data\n    if (product.product_name && product.interest_rate) {\n      products.push(product);\n    }\n  });\n} else if (siteName === 'Finance Credit Union') {\n  // Different selectors for this website\n  $(selector).each((i, el) => {\n    const product = {\n      provider_name: siteName,\n      product_name: $(el).find('h3').text().trim(),\n      interest_rate: parseFloat($(el).find('.rate').text().replace('APR: ', '').replace('%', '')),\n      min_loan_amount: parseFloat($(el).find('.amount').text().split('-')[0].replace('$', '').replace(',', '').trim()),\n      max_loan_amount: parseFloat($(el).find('.amount').text().split('-')[1].replace('$', '').replace(',', '').trim()),\n      loan_term_months: parseInt($(el).find('.term').text().split(' ')[0]),\n      min_credit_score: parseInt($(el).find('.requirements li:nth-child(1)').text().replace('Min Credit Score: ', '')),\n      min_monthly_income: parseFloat($(el).find('.requirements li:nth-child(2)').text().replace('Min Income: $', '').replace(',', '')),\n      max_debt_to_income: parseFloat($(el).find('.requirements li:nth-child(3)').text().replace('Max DTI: ', '').replace('%', '')),\n      min_employment_years: parseFloat($(el).find('.requirements li:nth-child(4)').text().replace('Min Employment: ', '').replace(' years', '')),\n      min_age: 18, // Default value if not specified\n      max_age: 100, // Default value if not specified\n      other_criteria: JSON.stringify({\n        membership_required: true\n      }),\n      source_url: $input.item.json.url\n    };\n    \n    // Only add if we have the essential data\n    if (product.product_name && product.interest_rate) {\n      products.push(product);\n    }\n  });\n} else if (siteName === 'Lending Tree') {\n  // Different selectors for this website\n  $(selector).each((i, el) => {\n    const product = {\n      provider_name: $(el).find('.lender-name').text().trim(),\n      product_name: $(el).find('.product-name').text().trim(),\n      interest_rate: parseFloat($(el).find('.rate-value').text().replace('%', '')),\n      min_loan_amount: parseFloat($(el).find('.loan-amount').text().split('-')[0].replace('$', '').replace(',', '').trim()),\n      max_loan_amount: parseFloat($(el).find('.loan-amount').text().split('-')[1].replace('$', '').replace(',', '').trim()),\n      loan_term_months: parseInt($(el).find('.loan-term').text().split('-')[1].replace(' mo', '').trim()),\n      min_credit_score: parseInt($(el).find('.credit-score').text().replace('Min. Credit Score: ', '')),\n      min_monthly_income: 0, // Not provided on this site\n      max_debt_to_income: 0, // Not provided on this site\n      min_employment_years: 0, // Not provided on this site\n      min_age: 18, // Default value\n      max_age: 100, // Default value\n      other_criteria: JSON.stringify({\n        online_application: $(el).find('.features').text().includes('Online Application'),\n        fast_funding: $(el).find('.features').text().includes('Fast Funding')\n      }),\n      source_url: $input.item.json.url\n    };\n    \n    // Only add if we have the essential data\n    if (product.product_name && product.interest_rate) {\n      products.push(product);\n    }\n  });\n}\n\n// Handle case where no products were found\nif (products.length === 0) {\n  // Return a placeholder to indicate no products found\n  return [{\n    json: {\n      status: 'no_products_found',\n      website: siteName,\n      url: $input.item.json.url\n    }\n  }];\n}\n\n// Return the extracted products\nreturn products.map(product => {\n  return {\n    json: product\n  };\n});"
+      },
+      "name": "Extract Products",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "exists"
+            }
+          ]
+        }
+      },
+      "name": "No Products Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": "public",
+        "table": "loan_products",
+        "columns": "provider_name, product_name, interest_rate, min_loan_amount, max_loan_amount, loan_term_months, min_credit_score, min_monthly_income, max_debt_to_income, min_employment_years, min_age, max_age, other_criteria, source_url",
+        "additionalFields": {}
+      },
+      "name": "Insert to Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Log websites with no products found\nconst website = $input.item.json.website;\nconst url = $input.item.json.url;\n\nconsole.log(`No products found for ${website} at ${url}`);\n\n// Return the input to continue the workflow\nreturn $input.item;"
+      },
+      "name": "Log No Products",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $node[\"Split Into Items\"].context[\"noItemsLeft\"] }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "All Sites Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT COUNT(*) as product_count FROM loan_products;"
+      },
+      "name": "Count Products",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://hooks.slack.com/services/YOUR_SLACK_WEBHOOK_URL",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "=Loan Product Discovery completed. Found {{ $node[\"Count Products\"].json[\"product_count\"] }} products in the database."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Send Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        200
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Continue to Next Site",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Define Websites",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Define Websites": {
+      "main": [
+        [
+          {
+            "node": "Split Into Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Into Items": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Extract Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Products": {
+      "main": [
+        [
+          {
+            "node": "No Products Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Products Found?": {
+      "main": [
+        [
+          {
+            "node": "Insert to Database",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log No Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert to Database": {
+      "main": [
+        [
+          {
+            "node": "All Sites Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log No Products": {
+      "main": [
+        [
+          {
+            "node": "All Sites Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Sites Processed?": {
+      "main": [
+        [
+          {
+            "node": "Count Products",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Continue to Next Site",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Products": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue to Next Site": {
+      "main": [
+        [
+          {
+            "node": "Split Into Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

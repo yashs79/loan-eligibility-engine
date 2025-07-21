@@ -1,0 +1,4 @@
+email,monthly_income,credit_score,employment_status,age,debt_to_income_ratio,existing_loans
+john.doe@example.com,5000,720,employed,35,0.3,1
+jane.smith@example.com,7500,780,self-employed,42,0.25,0
+alex.johnson@example.com,3200,650,employed,28,0.4,2

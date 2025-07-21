@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loan Eligibility Engine - Upload User Data</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1048.0.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Loan Eligibility Engine</h1>
+            <p>Upload user data to find eligible loan products</p>
+        </header>
+
+        <main>
+            <section class="upload-section">
+                <h2>Upload User Data</h2>
+                <div class="upload-container">
+                    <div class="file-input-wrapper">
+                        <label for="csv-file" id="file-label">
+                            <span class="file-icon">📄</span>
+                            <span class="file-text">Choose a CSV file or drag it here</span>
+                        </label>
+                        <input type="file" id="csv-file" accept=".csv" />
+                    </div>
+                    <div class="file-details" id="file-details">
+                        <p>No file selected</p>
+                    </div>
+                </div>
+
+                <div class="template-section">
+                    <h3>CSV Template</h3>
+                    <p>Your CSV file should include the following columns:</p>
+                    <ul>
+                        <li><strong>email</strong> - User's email address</li>
+                        <li><strong>monthly_income</strong> - Monthly income in dollars</li>
+                        <li><strong>credit_score</strong> - Credit score (300-850)</li>
+                        <li><strong>employment_status</strong> - Current employment status</li>
+                        <li><strong>age</strong> - User's age</li>
+                        <li><strong>debt_to_income_ratio</strong> - (Optional) Debt to income ratio</li>
+                        <li><strong>existing_loans</strong> - (Optional) Number of existing loans</li>
+                    </ul>
+                    <a href="template/user_data_template.csv" download class="button secondary">Download Template</a>
+                </div>
+
+                <button id="upload-button" class="button primary" disabled>Upload Data</button>
+            </section>
+
+            <section class="status-section">
+                <h2>Upload Status</h2>
+                <div class="status-container" id="status-container">
+                    <div class="status-message" id="status-message">
+                        No active uploads
+                    </div>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" id="progress-bar"></div>
+                    </div>
+                </div>
+                <div class="upload-history" id="upload-history">
+                    <h3>Recent Uploads</h3>
+                    <ul id="history-list">
+                        <!-- Upload history will be populated here -->
+                    </ul>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>&copy; 2025 Loan Eligibility Engine</p>
+        </footer>
+    </div>
+
+    <script src="js/config.js"></script>
+    <script src="js/upload.js"></script>
+</body>
+</html>

@@ -1,0 +1,633 @@
+{
+  "name": "Loan Eligibility Engine - Main Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "minutesInterval": 1440
+            }
+          ]
+        }
+      },
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Start Loan Discovery",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        450,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "workflow_a_loan_discovery"
+      },
+      "name": "Execute Loan Discovery",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        650,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT COUNT(*) as new_products FROM loan_products WHERE created_at > NOW() - INTERVAL '1 day';"
+      },
+      "name": "Count New Products",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        850,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://hooks.slack.com/services/YOUR_SLACK_WEBHOOK_URL",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "=Daily loan product discovery completed.\n\nNew products found: {{ $node[\"Count New Products\"].json[\"new_products\"] }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Notify Discovery Complete",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT batch_id, COUNT(*) as user_count FROM users WHERE processed = FALSE GROUP BY batch_id;"
+      },
+      "name": "Check for New Users",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        450,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.length }}",
+              "operation": "notEqual",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "New Users Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        650,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1
+      },
+      "name": "Process Each Batch",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "workflow_b_user_loan_matching",
+        "options": {}
+      },
+      "name": "Execute Matching",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $node[\"Process Each Batch\"].context[\"noItemsLeft\"] }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "All Batches Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        300
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Continue to Next Batch",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT batch_id, COUNT(*) as match_count FROM users u JOIN matches m ON u.user_id = m.user_id WHERE m.notified = FALSE GROUP BY batch_id;"
+      },
+      "name": "Check for Unnotified Matches",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.length }}",
+              "operation": "notEqual",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "Unnotified Matches Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1
+      },
+      "name": "Process Each Notification Batch",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "workflow_c_user_notification",
+        "options": {}
+      },
+      "name": "Execute Notification",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $node[\"Process Each Notification Batch\"].context[\"noItemsLeft\"] }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "All Notifications Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2250,
+        100
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Continue to Next Notification Batch",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2450,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE users SET processed = TRUE WHERE processed = FALSE;"
+      },
+      "name": "Mark All Users as Processed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        2450,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  (SELECT COUNT(*) FROM users) as total_users,\n  (SELECT COUNT(*) FROM loan_products) as total_products,\n  (SELECT COUNT(*) FROM matches) as total_matches,\n  (SELECT COUNT(*) FROM notifications WHERE status = 'sent') as total_notifications;"
+      },
+      "name": "Get System Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        2650,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://hooks.slack.com/services/YOUR_SLACK_WEBHOOK_URL",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "=Daily loan eligibility processing completed.\n\nSystem Stats:\n- Total Users: {{ $node[\"Get System Stats\"].json[\"total_users\"] }}\n- Total Loan Products: {{ $node[\"Get System Stats\"].json[\"total_products\"] }}\n- Total Matches: {{ $node[\"Get System Stats\"].json[\"total_matches\"] }}\n- Total Notifications Sent: {{ $node[\"Get System Stats\"].json[\"total_notifications\"] }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Send Daily Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        2850,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "No New Users",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        850,
+        500
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "No Unnotified Matches",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "Start Loan Discovery",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check for New Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Loan Discovery": {
+      "main": [
+        [
+          {
+            "node": "Execute Loan Discovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Loan Discovery": {
+      "main": [
+        [
+          {
+            "node": "Count New Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count New Products": {
+      "main": [
+        [
+          {
+            "node": "Notify Discovery Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check for New Users": {
+      "main": [
+        [
+          {
+            "node": "New Users Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New Users Found?": {
+      "main": [
+        [
+          {
+            "node": "Process Each Batch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No New Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Each Batch": {
+      "main": [
+        [
+          {
+            "node": "Execute Matching",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Matching": {
+      "main": [
+        [
+          {
+            "node": "All Batches Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Batches Processed?": {
+      "main": [
+        [
+          {
+            "node": "Check for Unnotified Matches",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Continue to Next Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue to Next Batch": {
+      "main": [
+        [
+          {
+            "node": "Process Each Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check for Unnotified Matches": {
+      "main": [
+        [
+          {
+            "node": "Unnotified Matches Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unnotified Matches Found?": {
+      "main": [
+        [
+          {
+            "node": "Process Each Notification Batch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Unnotified Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Each Notification Batch": {
+      "main": [
+        [
+          {
+            "node": "Execute Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Notification": {
+      "main": [
+        [
+          {
+            "node": "All Notifications Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Notifications Processed?": {
+      "main": [
+        [
+          {
+            "node": "Mark All Users as Processed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Continue to Next Notification Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue to Next Notification Batch": {
+      "main": [
+        [
+          {
+            "node": "Process Each Notification Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark All Users as Processed": {
+      "main": [
+        [
+          {
+            "node": "Get System Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get System Stats": {
+      "main": [
+        [
+          {
+            "node": "Send Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No New Users": {
+      "main": [
+        [
+          {
+            "node": "Check for Unnotified Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Unnotified Matches": {
+      "main": [
+        [
+          {
+            "node": "Mark All Users as Processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Discovery Complete": {
+      "main": [
+        []
+      ]
+    }
+  }
+}

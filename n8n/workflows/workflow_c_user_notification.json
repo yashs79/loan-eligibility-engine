@@ -1,0 +1,462 @@
+{
+  "name": "User Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "loan-notification",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ],
+      "webhookId": "loan-notification"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Extract batch_id from the webhook payload\nconst batchId = $input.item.json.body.batch_id;\n\nif (!batchId) {\n  throw new Error('No batch_id provided in webhook payload');\n}\n\nreturn {\n  json: {\n    batch_id: batchId\n  }\n};"
+      },
+      "name": "Extract Batch ID",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT DISTINCT u.user_id, u.email, u.monthly_income, u.credit_score\nFROM users u\nJOIN matches m ON u.user_id = m.user_id\nWHERE u.batch_id = '{{ $json.batch_id }}'\nAND m.notified = FALSE;"
+      },
+      "name": "Get Users with Matches",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        650,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.length }}",
+              "operation": "notEqual",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "Users Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1
+      },
+      "name": "Process Each User",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT lp.provider_name, lp.product_name, lp.interest_rate, lp.min_loan_amount, lp.max_loan_amount, lp.loan_term_months, m.match_score\nFROM matches m\nJOIN loan_products lp ON m.product_id = lp.product_id\nWHERE m.user_id = {{ $json.user_id }}\nAND m.notified = FALSE\nORDER BY m.match_score DESC;"
+      },
+      "name": "Get User's Matches",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        1250,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Generate a personalized email for the user\nconst user = $input.item.json;\nconst matches = $node[\"Get User's Matches\"].json;\n\nif (!matches || matches.length === 0) {\n  return {\n    json: {\n      user_id: user.user_id,\n      email: user.email,\n      skip: true,\n      reason: 'No matches found'\n    }\n  };\n}\n\n// Format currency\nconst formatCurrency = (amount) => {\n  return new Intl.NumberFormat('en-US', {\n    style: 'currency',\n    currency: 'USD',\n    minimumFractionDigits: 0,\n    maximumFractionDigits: 0\n  }).format(amount);\n};\n\n// Generate the email subject\nconst subject = `Good news! We've found ${matches.length} loan ${matches.length === 1 ? 'option' : 'options'} for you`;\n\n// Generate the email body\nlet body = `\n<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }\n    .container { max-width: 600px; margin: 0 auto; padding: 20px; }\n    .header { background-color: #3498db; color: white; padding: 20px; text-align: center; }\n    .content { padding: 20px; }\n    .loan-item { border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 5px; }\n    .loan-name { color: #3498db; font-size: 18px; font-weight: bold; }\n    .loan-provider { color: #777; }\n    .loan-details { margin-top: 10px; }\n    .loan-match { background-color: #f8f9fa; padding: 5px 10px; border-radius: 15px; font-size: 14px; }\n    .footer { background-color: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #777; }\n    .button { display: inline-block; background-color: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; }\n  </style>\n</head>\n<body>\n  <div class=\"container\">\n    <div class=\"header\">\n      <h1>Loan Eligibility Results</h1>\n    </div>\n    <div class=\"content\">\n      <p>Dear ${user.email.split('@')[0]},</p>\n      <p>We're pleased to inform you that based on your financial profile, you may be eligible for the following loan products:</p>\n`;\n\n// Add each loan product to the email\nmatches.forEach(match => {\n  const matchScore = Math.round(match.match_score);\n  body += `\n      <div class=\"loan-item\">\n        <div class=\"loan-name\">${match.product_name}</div>\n        <div class=\"loan-provider\">from ${match.provider_name}</div>\n        <div class=\"loan-details\">\n          <p><strong>Interest Rate:</strong> ${match.interest_rate}%</p>\n          <p><strong>Loan Amount:</strong> ${formatCurrency(match.min_loan_amount)} - ${formatCurrency(match.max_loan_amount)}</p>\n          <p><strong>Term:</strong> ${match.loan_term_months} months</p>\n          <p><span class=\"loan-match\">Match Score: ${matchScore}%</span></p>\n        </div>\n      </div>\n  `;\n});\n\n// Complete the email\nbody += `\n      <p>These matches are based on the information you provided. To proceed with any of these options, please visit the lender's website or contact them directly.</p>\n      <p>If you have any questions about these recommendations, feel free to contact our support team.</p>\n      <p>Best regards,<br>Loan Eligibility Engine Team</p>\n    </div>\n    <div class=\"footer\">\n      <p>This is an automated email. Please do not reply directly to this message.</p>\n      <p>© ${new Date().getFullYear()} Loan Eligibility Engine</p>\n    </div>\n  </div>\n</body>\n</html>\n`;\n\nreturn {\n  json: {\n    user_id: user.user_id,\n    email: user.email,\n    subject: subject,\n    body: body,\n    skip: false,\n    match_count: matches.length\n  }\n};"
+      },
+      "name": "Generate Email Content",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1450,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.skip }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Skip Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "notifications@loaneligibility.example.com",
+        "toEmail": "={{ $json.email }}",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.body }}",
+        "options": {}
+      },
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        1850,
+        100
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "1",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE matches\nSET notified = TRUE\nWHERE user_id = {{ $json.user_id }};"
+      },
+      "name": "Mark as Notified",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO notifications (user_id, email_subject, email_body, status)\nVALUES ({{ $json.user_id }}, '{{ $json.subject }}', '{{ $json.body }}', 'sent');"
+      },
+      "name": "Log Notification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        2250,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $node[\"Process Each User\"].context[\"noItemsLeft\"] }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "All Users Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2450,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT COUNT(*) as emails_sent\nFROM notifications\nWHERE sent_at >= NOW() - INTERVAL '1 hour'\nAND status = 'sent';"
+      },
+      "name": "Count Sent Emails",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        2650,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "PostgreSQL account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://hooks.slack.com/services/YOUR_SLACK_WEBHOOK_URL",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "=User notification process completed.\n\nEmails sent in the last hour: {{ $node[\"Count Sent Emails\"].json[\"emails_sent\"] }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Send Completion Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        2850,
+        100
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Continue to Next User",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2450,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Log that no users were found with matches\nconsole.log('No users found with matches to notify');\n\nreturn $input.item;"
+      },
+      "name": "Log No Users",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1050,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Batch ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Batch ID": {
+      "main": [
+        [
+          {
+            "node": "Get Users with Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Users with Matches": {
+      "main": [
+        [
+          {
+            "node": "Users Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Users Found?": {
+      "main": [
+        [
+          {
+            "node": "Process Each User",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log No Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Each User": {
+      "main": [
+        [
+          {
+            "node": "Get User's Matches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get User's Matches": {
+      "main": [
+        [
+          {
+            "node": "Generate Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Email Content": {
+      "main": [
+        [
+          {
+            "node": "Skip Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip Email?": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "All Users Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email": {
+      "main": [
+        [
+          {
+            "node": "Mark as Notified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark as Notified": {
+      "main": [
+        [
+          {
+            "node": "Log Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Notification": {
+      "main": [
+        [
+          {
+            "node": "All Users Processed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Users Processed?": {
+      "main": [
+        [
+          {
+            "node": "Count Sent Emails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Continue to Next User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Sent Emails": {
+      "main": [
+        [
+          {
+            "node": "Send Completion Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue to Next User": {
+      "main": [
+        [
+          {
+            "node": "Process Each User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
